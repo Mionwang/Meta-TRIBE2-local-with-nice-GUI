@@ -1,0 +1,5 @@
+# Provenance and limits
+
+The inference model and source come from Meta's official TRIBE v2 release, licensed CC BY-NC 4.0. A copy of that license is in `TRIBE-LICENSE.txt`. The ROI parcel groups in `src/reel_metrics.py` adapt the Apache-2.0 `metrics.py` in `techfreakworm/tribev2-brain-timeline` at commit `56e31aa6364c989a1c5a58620db110434f7851aa`; a copy of its license is in `ANALYSIS-APACHE-LICENSE.txt`. The new command-line runner, report code, and event logic were written for this local project.
+
+The ROI choices and weights are exploratory. Cortical predictions are not individual brain recordings and are not direct measures of attention, engagement, emotion, retention, or virality. The virality curve uses cortical value-related parcels only; TRIBE's cortical output omits subcortical reward regions. Per-clip rank normalization means a 90 in one video is not known to outperform a 60 in another video. No absolute scoring or editing recommendation has been validated against Instagram outcomes.

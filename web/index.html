@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b0c0e">
+  <title>TRIBE Response Lab</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23121417'/%3E%3Cpath d='M6 19c3 0 3-7 6-7s3 11 6 11 3-15 6-15 2 6 2 6' fill='none' stroke='%237fe0c8' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E">
+  <script>try{const t=localStorage.getItem('tribeTheme');if(t)document.documentElement.dataset.theme=t;}catch(_){}</script>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9"/><path d="M6 19c3 0 3-7 6-7s3 11 6 11 3-15 6-15 2 6 2 6"/></svg>
+      <span>TRIBE <em>Response Lab</em></span>
+    </div>
+    <div class="top-right">
+      <span id="gpuChip" class="chip hidden" title="GPU memory in use"><span class="chip-dot"></span><span id="gpuText">GPU</span></span>
+      <span class="chip muted-chip" title="Nothing leaves this computer"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 7V5.5a3.5 3.5 0 0 1 7 0V7M3.5 7h9v6.5h-9z"/></svg>Local</span>
+      <button id="themeToggle" class="icon-btn" type="button" aria-label="Toggle light or dark theme" title="Toggle theme (T)">
+        <svg class="i-moon" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 9.6A5.5 5.5 0 0 1 6.4 2.5a5.5 5.5 0 1 0 7.1 7.1z"/></svg>
+        <svg class="i-sun" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3"/><path d="M8 1v1.6M8 13.4V15M1 8h1.6M13.4 8H15M3 3l1.1 1.1M11.9 11.9 13 13M3 13l1.1-1.1M11.9 4.1 13 3"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main>
+    <section class="intro">
+      <p class="eyebrow">Multimodal response explorer</p>
+      <h1>See how a stimulus <span>unfolds</span>.</h1>
+      <p class="lead">Run Meta's TRIBE v2 locally on a video, audio clip, image or script, and read the predicted cortical response second by second.</p>
+    </section>
+
+    <section class="composer" aria-label="Add input">
+      <div class="seg" role="tablist" aria-label="Input type">
+        <button id="tabFile" class="seg-btn active" role="tab" aria-selected="true" type="button">File</button>
+        <button id="tabText" class="seg-btn" role="tab" aria-selected="false" type="button">Text</button>
+        <span class="seg-glider" aria-hidden="true"></span>
+      </div>
+
+      <div id="filePane" class="pane">
+        <div id="dropZone" class="drop-zone" tabindex="0" role="button" aria-label="Choose or drop video, audio, image, or text">
+          <input id="fileInput" type="file" accept=".mp4,.mov,.mkv,.webm,.avi,.wav,.mp3,.flac,.ogg,.m4a,.png,.jpg,.jpeg,.webp,.bmp,.txt" hidden>
+          <div class="drop-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 16V4m0 0-4.5 4.5M12 4l4.5 4.5M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg></div>
+          <div class="drop-title">Drop a file, or <u>browse</u></div>
+          <div class="drop-types"><span>MP4 · MOV · MKV · WEBM</span><span>WAV · MP3 · FLAC · M4A</span><span>PNG · JPG · WEBP</span><span>TXT</span></div>
+        </div>
+      </div>
+
+      <div id="textPane" class="pane hidden">
+        <textarea id="textInput" rows="6" maxlength="10000" placeholder="Paste a script, voiceover or passage…" aria-label="Text to analyze"></textarea>
+        <div class="text-foot">
+          <span class="hint-text">Spoken with this PC's English voice, then analyzed as audio. <span id="charCount" class="mono">0 / 10,000</span></span>
+          <button id="analyzeText" class="btn primary" type="button">Analyze text <kbd>Ctrl ↵</kbd></button>
+        </div>
+      </div>
+      <p class="composer-foot">Official TRIBE v2 inference · images are held as a 6-second still · files never leave this computer</p>
+    </section>
+
+    <section id="jobPanel" class="job-panel hidden" aria-live="polite">
+      <div class="job-top">
+        <div class="job-title">
+          <span id="jobSpinner" class="spinner" aria-hidden="true"></span>
+          <div><p class="eyebrow" id="jobEyebrow">Analyzing</p><h2 id="jobName">Your input</h2></div>
+        </div>
+        <div class="job-side">
+          <span id="elapsedClock" class="mono dim">00:00</span>
+          <button id="cancelJob" class="btn ghost small" type="button">Cancel</button>
+          <button id="dismissJob" class="btn ghost small hidden" type="button">Dismiss</button>
+        </div>
+      </div>
+      <div class="progress-track"><div id="progressFill" class="progress-fill"></div></div>
+      <ol id="stepList" class="steps">
+        <li data-at="0">Prepare</li><li data-at="10">Load model</li><li data-at="25">Extract features</li><li data-at="85">Predict</li><li data-at="95">Summarize</li>
+      </ol>
+      <p id="jobMessage" class="job-message">Loading local models…</p>
+      <details class="log-details"><summary>Technical log</summary><pre id="jobLog" class="mono"></pre></details>
+    </section>
+
+    <section id="results" class="results hidden">
+      <div class="result-head">
+        <div class="result-title">
+          <p class="eyebrow"><span id="kindBadge" class="badge">Video</span> Your analysis</p>
+          <h2 id="resultName">Response</h2>
+          <p id="resultIntro" class="sub">Every score is relative to this input.</p>
+          <p id="resultTiming" class="sub mono hidden"></p>
+        </div>
+        <div class="result-actions">
+          <a id="reportLink" class="btn ghost small" target="_blank" rel="noopener">Full report ↗</a>
+          <a id="csvLink" class="btn ghost small" download>CSV</a>
+          <a id="jsonLink" class="btn ghost small" download>JSON</a>
+          <a id="plotLink" class="btn ghost small" download>PNG</a>
+        </div>
+      </div>
+
+      <div id="statGrid" class="stat-grid"></div>
+
+      <div class="main-grid">
+        <article class="card chart-card">
+          <div class="card-head">
+            <h3 id="timelineTitle">Response timeline</h3>
+            <span id="timelineHint" class="hint">Click to seek · <kbd>Space</kbd> play · <kbd>←</kbd><kbd>→</kbd> step</span>
+          </div>
+          <div class="legend" data-chart="0"></div>
+          <div class="canvas-wrap"><canvas id="attentionChart" aria-label="Attention timeline graph"></canvas><div class="chart-tooltip hidden"></div></div>
+          <p id="chartNote" class="note">Shaded spans mark the weakest relative sections. The index is not a retention percentage.</p>
+        </article>
+        <article class="card media-card">
+          <div class="card-head"><h3 id="sourceTitle">Your input</h3><span id="mediaTime" class="mono dim"></span></div>
+          <div id="videoWrap" class="media-wrap">
+            <video id="reelVideo" class="hidden" controls playsinline preload="metadata"></video>
+            <img id="sourceImage" class="hidden" alt="Uploaded image">
+            <div id="sourceText" class="source-text hidden"></div>
+            <div id="noVideo" class="no-video hidden">Preview isn't available for this saved result.</div>
+            <audio id="sourceAudio" class="hidden" controls preload="metadata"></audio>
+          </div>
+          <p id="sourceNote" class="note"></p>
+        </article>
+      </div>
+
+      <div class="detail-grid">
+        <article class="card chart-card">
+          <div class="card-head"><h3 id="sensoryTitle">Sensory</h3></div>
+          <div class="legend" data-chart="1"></div>
+          <div class="canvas-wrap compact"><canvas id="sensoryChart" aria-label="Visual and auditory engagement graph"></canvas><div class="chart-tooltip hidden"></div></div>
+        </article>
+        <article class="card chart-card">
+          <div class="card-head"><h3>Cognitive, language &amp; value</h3></div>
+          <div class="legend" data-chart="2"></div>
+          <div class="canvas-wrap compact"><canvas id="cognitiveChart" aria-label="Cognitive and semantic graph"></canvas><div class="chart-tooltip hidden"></div></div>
+        </article>
+      </div>
+
+      <div id="insightGrid" class="insight-grid">
+        <article class="card"><div class="card-head"><h3><i class="dot weak"></i>Weak sections</h3></div><div id="weakList" class="insight-list"></div></article>
+        <article class="card"><div class="card-head"><h3><i class="dot rec"></i>Recoveries</h3></div><div id="recoveryList" class="insight-list"></div></article>
+        <article class="card"><div class="card-head"><h3><i class="dot peak"></i>Peak moments</h3></div><div id="peakList" class="insight-list"></div></article>
+      </div>
+
+      <div class="caveat">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5"/><path d="M8 7.2v4M8 4.8v.1"/></svg>
+        <p><b>How to read this.</b> <span id="methodNote">TRIBE v2 predicts cortical activity. These curves are experimental neural proxies, not measurements of a viewer or forecasts of Instagram performance.</span></p>
+      </div>
+    </section>
+
+    <section id="recentSection" class="library hidden">
+      <div class="library-head">
+        <div><p class="eyebrow">On this computer</p><h2>Library</h2></div>
+        <div class="library-tools">
+          <div class="search"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg><input id="librarySearch" type="search" placeholder="Search analyses" aria-label="Search analyses"></div>
+          <div class="seg small" id="kindFilter" role="group" aria-label="Filter by type">
+            <button class="seg-btn active" data-kind="" type="button">All</button><button class="seg-btn" data-kind="video" type="button">Video</button><button class="seg-btn" data-kind="audio" type="button">Audio</button><button class="seg-btn" data-kind="image" type="button">Image</button><button class="seg-btn" data-kind="text" type="button">Text</button>
+          </div>
+        </div>
+      </div>
+      <div id="recentList" class="library-list"></div>
+      <button id="showAll" class="btn ghost small show-all hidden" type="button">Show all</button>
+    </section>
+  </main>
+
+  <div id="dropOverlay" class="drop-overlay hidden" aria-hidden="true"><div>Drop to analyze</div></div>
+  <div id="toast" class="toast hidden" role="status"></div>
+
+  <footer><span>TRIBE Response Lab</span><span>Local research tool · non-commercial use</span></footer>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
