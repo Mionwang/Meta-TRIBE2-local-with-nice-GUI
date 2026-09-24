@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import os
+import platform
 import re
 import socket
 import subprocess
@@ -26,6 +27,7 @@ from werkzeug.utils import secure_filename
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 from prepare_input import kind_for_suffix, prepare_input
+import projection
 
 ROOT = Path(__file__).resolve().parent
 WEB = ROOT / "web"
@@ -210,8 +212,30 @@ def _gpu_info() -> dict | None:
                      "util": int(float(util))}
     except (OSError, ValueError, subprocess.SubprocessError):
         value = None
+    if value is None and sys.platform == "darwin" and platform.machine() == "arm64":
+        value = _apple_info()
     GPU_CACHE.update(at=now, value=value)
     return value
+
+
+def _apple_info() -> dict | None:
+    """Apple Silicon: the GPU shares system memory, so report unified memory in use."""
+    try:
+        chip = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True,
+                              text=True, timeout=3).stdout.strip() or "Apple Silicon"
+        total = int(subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True,
+                                   text=True, timeout=3).stdout.strip() or 0)
+        used = None
+        try:
+            import psutil
+            vm = psutil.virtual_memory()
+            used = vm.total - vm.available
+        except ImportError:
+            pass
+        return {"name": chip.replace("Apple ", "") + " · Metal", "mem_used_mb": int(used / 2**20) if used else None,
+                "mem_total_mb": int(total / 2**20) if total else None, "util": None, "unified": True}
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
 
 
 @app.get("/api/status")
@@ -246,6 +270,25 @@ def not_found(_error):
 @app.errorhandler(500)
 def server_error(_error):
     return jsonify(error="The local server hit an unexpected error. Check the console window."), 500
+
+
+def _projection(result_id: str) -> dict | None:
+    """Toy projected-performance scores, ranked against the rest of the library."""
+    folder = OUTPUT / result_id
+    own = projection.raw_features(folder / "attention_timeline.csv")
+    if own is None:
+        return None
+    others = []
+    if OUTPUT.is_dir():
+        for other in OUTPUT.iterdir():
+            if other.name == result_id or not other.is_dir() or not RESULT_ID.fullmatch(other.name):
+                continue
+            if _source_info(other).get("kind") == "image":
+                continue  # a 6-second still is not a fair comparison for reels
+            feats = projection.raw_features(other / "attention_timeline.csv")
+            if feats is not None:
+                others.append(feats)
+    return projection.score(own, others)
 
 
 @app.get("/")
@@ -331,6 +374,8 @@ def recent():
                 items.append({"id": folder.name, "name": source["filename"], "kind": source.get("kind", "video"),
                               "hook": metrics.get("hook_strength"),
                               "later": metrics.get("sustained_attention"),
+                              "projection": (proj := _projection(folder.name) or {}).get("score"),
+                              "duration_s": proj.get("duration_s"),
                               "updated": datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="minutes"),
                               "demo": folder.name == "test_reel"})
             except (ValueError, OSError):
@@ -359,6 +404,7 @@ def result_data(result_id: str):
         if text_file.is_file():
             text_preview = text_file.read_text(encoding="utf-8-sig")[:3000]
     return jsonify(id=result_id, name=source["filename"], kind=kind, metrics=metrics,
+                   projection=_projection(result_id),
                    timeline=rows, explanation=source.get("explanation", ""),
                    preview_url=preview, text_preview=text_preview,
                    speech_url=f"/api/results/{result_id}/speech" if kind == "text" else None,

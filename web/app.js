@@ -561,6 +561,8 @@ async function loadResult(resultId, {scroll = true} = {}) {
   $('#methodNote').textContent = 'TRIBE v2 predicts cortical activity. These curves are experimental neural proxies ranked within this input, not measured attention, retention or virality.';
   $('#insightGrid').classList.toggle('hidden', kind === 'image');
   renderStats(metrics, kind, rows);
+  currentProjection = data.projection ? {proj: data.projection, kind} : null;
+  renderProjection();
   if (kind !== 'image') renderInsights(metrics);
   setLink('#reportLink', data.files?.['report.html']);
   setLink('#csvLink', data.files?.['attention_timeline.csv']);
@@ -621,6 +623,85 @@ async function loadResult(resultId, {scroll = true} = {}) {
 
 ['timeupdate', 'seeked', 'loadedmetadata'].forEach(evt => [video, audio].forEach(m => m.addEventListener(evt, redrawCharts)));
 
+/* ---------------- projected performance (toy) ---------------- */
+function compact(n) {
+  if (!Number.isFinite(n)) return '—';
+  if (n >= 1e6) return `${(n / 1e6).toFixed(n >= 1e7 ? 0 : 1)}M`;
+  if (n >= 1e4) return `${Math.round(n / 1e3)}K`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+  return String(Math.round(n));
+}
+function readBaseline() {
+  const n = Number(String(store.get('localStorage', 'tribeBaseline') || '2000').replace(/[^0-9.]/g, ''));
+  return Number.isFinite(n) && n > 0 ? n : 2000;
+}
+
+// Deliberately simple, transparent maths. Not fitted to any real data.
+function projectCounts(proj, kind, baseline) {
+  const f = proj.factors;
+  const multiplier = 5 ** ((proj.score - 50) / 50);           // score 0 -> 0.2x, 50 -> 1x, 100 -> 5x
+  const d = Number(proj.duration_s) || 15;
+  let format = Math.min(1.15, Math.max(0.6, 1.15 - 0.0075 * Math.max(0, d - 10)));  // short reels travel further
+  if (kind === 'image') format = 0.9;
+  if (kind === 'audio' || kind === 'text') format *= 0.85;   // treated as a voiceover-only reel
+  const views = baseline * multiplier * format;
+  const likeRate = 0.025 + 0.05 * (f.value / 100);           // 2.5 % – 7.5 % of views
+  const commentRate = 0.01 + 0.05 * (f.talk / 100);           // 1 % – 6 % of likes
+  const likes = views * likeRate;
+  const comments = likes * commentRate;
+  const band = 3;                                             // honest-looking spread: ÷3 to ×3
+  return {views, likes, comments, band, multiplier: multiplier * format, likeRate, commentRate};
+}
+
+let currentProjection = null;
+function renderProjection() {
+  const card = $('#projectionCard');
+  if (!currentProjection) { card.classList.add('hidden'); return; }
+  const {proj, kind} = currentProjection;
+  card.classList.remove('hidden');
+  const baseline = readBaseline();
+  const p = projectCounts(proj, kind, baseline);
+  const set = (id, v) => {
+    $(`#${id}`).textContent = compact(v);
+    $(`#${id}Range`).textContent = `${compact(v / p.band)} – ${compact(v * p.band)}`;
+  };
+  set('projViews', p.views); set('projLikes', p.likes); set('projComments', p.comments);
+  $('#projScore').textContent = fmtScore(proj.score);
+  $('#projScoreMark').style.left = `${Math.max(0, Math.min(100, proj.score))}%`;
+  $('#projMult').textContent = `${p.multiplier.toFixed(2)}× your typical · ${(p.likeRate * 100).toFixed(1)}% like rate`;
+  const list = $('#projFactors');
+  list.replaceChildren();
+  ['hook', 'hold', 'value', 'arousal', 'dynamics', 'talk'].filter(k => k in proj.factors).forEach(key => {
+    const value = proj.factors[key];
+    const row = document.createElement('div');
+    row.className = `factor${value >= 65 ? ' hi' : value <= 35 ? ' lo' : ''}`;
+    const [name, detail] = proj.labels[key].split(' (');
+    const label = document.createElement('span');
+    const weight = proj.weights[key] ? `${Math.round(proj.weights[key] * 100)}% of score` : 'drives comments';
+    label.textContent = name + ' ';
+    const small = document.createElement('small'); small.textContent = `· ${weight}`;
+    label.appendChild(small);
+    label.title = detail ? detail.replace(/\)$/, '') : '';
+    const num = document.createElement('b'); num.textContent = fmtScore(value);
+    const track = document.createElement('div'); track.className = 'track';
+    const fill = document.createElement('i'); fill.style.width = `${Math.max(2, value)}%`; track.appendChild(fill);
+    row.append(label, num, track);
+    list.appendChild(row);
+  });
+  const lib = proj.library_size > 1
+    ? ` Factors are ${Math.round(proj.library_weight * 100)}% ranked against your ${proj.library_size - 1} other analyses, so they shift as your library grows.`
+    : ' Analyze more reels and the factors start ranking against your own library.';
+  $('#projNote').textContent = `Built from TRIBE's predicted brain activity and scaled from your typical views. Not fitted to real Instagram data; treat it as an experiment.${lib}`;
+}
+
+const baselineInput = $('#baselineViews');
+baselineInput.value = readBaseline().toLocaleString();
+baselineInput.addEventListener('input', () => {
+  const n = Number(baselineInput.value.replace(/[^0-9.]/g, ''));
+  if (Number.isFinite(n) && n > 0) { store.set('localStorage', 'tribeBaseline', String(n)); renderProjection(); renderLibrary(); }
+});
+baselineInput.addEventListener('blur', () => { baselineInput.value = readBaseline().toLocaleString(); });
+
 /* ---------------- library ---------------- */
 const ICONS = {
   video: '<svg viewBox="0 0 16 16"><rect x="1.5" y="3.5" width="9" height="9" rx="2"/><path d="m10.5 7 4-2.5v7l-4-2.5"/></svg>',
@@ -658,11 +739,12 @@ function renderLibrary() {
     const sub = document.createElement('small'); sub.textContent = `${KIND_LABEL[kind] || kind} · ${fmtDate(item.updated)}`;
     body.append(title, sub);
     const scoreEl = document.createElement('span'); scoreEl.className = 'lib-score';
-    if (kind !== 'image' && item.hook != null) {
-      scoreEl.textContent = fmtScore(item.hook);
-      const label = document.createElement('small'); label.textContent = 'START'; label.style.display = 'block'; label.style.color = 'var(--text-3)';
+    if (item.projection != null) {
+      const est = projectCounts({score: item.projection, factors: {value: 50, talk: 50}, duration_s: item.duration_s}, kind, readBaseline());
+      scoreEl.textContent = compact(est.views);
+      const label = document.createElement('small'); label.className = 'lib-proj'; label.textContent = 'VIEWS*';
       scoreEl.appendChild(label);
-      scoreEl.title = 'Relative start (first 3 s)';
+      scoreEl.title = `Toy projected views (response score ${fmtScore(item.projection)}/100)`;
     }
     button.append(icon, body, scoreEl);
     button.addEventListener('click', () => loadResult(item.id));
@@ -692,9 +774,14 @@ async function refreshStatus() {
     const info = await response.json();
     const chip = $('#gpuChip');
     if (info.gpu) {
-      const used = (info.gpu.mem_used_mb / 1024).toFixed(1), total = (info.gpu.mem_total_mb / 1024).toFixed(0);
-      $('#gpuText').textContent = `${info.gpu.name} · ${used}/${total} GB`;
-      chip.title = `GPU utilisation ${info.gpu.util}% · memory in use ${used} of ${total} GB`;
+      const g = info.gpu;
+      const total = g.mem_total_mb ? (g.mem_total_mb / 1024).toFixed(0) : null;
+      const used = g.mem_used_mb != null ? (g.mem_used_mb / 1024).toFixed(1) : null;
+      const mem = total ? (used ? ` · ${used}/${total} GB` : ` · ${total} GB`) : '';
+      $('#gpuText').textContent = `${g.name}${mem}`;
+      chip.title = g.unified
+        ? `Apple Silicon unified memory${used ? ` in use: ${used} of ${total} GB` : ''} (shared by CPU and GPU)`
+        : `GPU utilisation ${g.util}% · memory in use ${used} of ${total} GB`;
       chip.classList.remove('hidden');
     } else {
       chip.classList.add('hidden');

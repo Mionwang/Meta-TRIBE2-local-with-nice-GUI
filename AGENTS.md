@@ -1,81 +1,106 @@
-# AGENTS.md — setting up TRIBE Response Lab
+# AGENTS.md: setting up TRIBE Response Lab
 
-Instructions for a coding agent (or a person) installing this repo on a new machine. Follow the steps in order and check each one before moving on.
+Instructions for a coding agent (or a person) installing this repo. First work out which platform you're on, then follow **only** that section. Check each step before moving on.
 
 ## What this repo is
 
-A local Windows app that runs Meta's **TRIBE v2** brain-response model (`facebook/tribev2`) on a video, audio clip, image or text. It turns the predicted cortical activity into experimental timeline curves (an attention proxy, sensory, cognitive and so on). It has:
+This is a local app that runs Meta's **TRIBE v2** brain-response model (`facebook/tribev2`) on a video, audio clip, image or text. It turns the predicted cortical activity into experimental timeline curves and a toy "projected performance" estimate.
 
-- `gui.py` + `web/` — a Flask server and a browser UI at `http://127.0.0.1:7860`
-- `analyze.py` — the command-line runner (the GUI starts it in a subprocess)
-- `src/` — input conversion (`prepare_input.py`), ROI metrics and reports (`reel_metrics.py`), a V-JEPA2 bf16 patch for the GPU (`gpu_video.py`), and the Windows text-to-speech helper (`speak_text.ps1`)
+| Path | What it is |
+| --- | --- |
+| `gui.py` + `web/` | Flask server and browser UI at `http://127.0.0.1:7860` |
+| `analyze.py` | Command-line runner (the GUI runs it in a subprocess). Picks the device automatically: CUDA, then MPS, then CPU |
+| `src/prepare_input.py` | Converts inputs; text-to-speech via Windows SAPI or macOS `say` |
+| `src/gpu_video.py` | NVIDIA only: runs V-JEPA2 in bf16 |
+| `src/apple_silicon.py` | Apple Silicon only: moves the encoders onto the Metal GPU (MPS) at runtime |
+| `src/reel_metrics.py`, `src/projection.py` | ROI metrics, reports, toy projections |
 
-The repo **does not include** the TRIBE source, model weights, the Python environment, or anyone's inputs and results. `setup.ps1` fetches or creates all of these.
+The repo **does not include** the TRIBE source, the model weights, the Python environment, or anyone's inputs and results. The setup script fetches or creates all of these.
 
-## Hard requirements
+## Pick your platform
 
-| Requirement | Why | How to check |
+| Platform | Supported? | Install script |
 | --- | --- | --- |
-| **Windows 10/11** | `.bat` launchers, `speak_text.ps1` uses Windows SAPI, paths assume Windows | — |
-| **NVIDIA GPU, 8 GB+ VRAM**, recent driver (CUDA 12.4 compatible) | PyTorch is installed from the `cu124` wheel index; V-JEPA2 runs in bf16 on CUDA; RTX 30-series or newer recommended (native bf16) | `nvidia-smi` |
-| **Python 3.12** (64-bit) | The venv is built with 3.12; the pinned packages target it | `py -3.12 --version` |
-| **Git** | `setup.ps1` clones `facebookresearch/tribev2` at a pinned commit | `git --version` |
-| **~25 GB free disk** | venv (~6 GB with CUDA torch) + model weights and feature caches in `cache/` | — |
-| **Internet on first run** | pip installs, the TRIBE clone, Hugging Face weight downloads, the HCP-MMP1 atlas files | — |
+| Windows 10/11 with an NVIDIA GPU (8 GB+ VRAM) | Yes (tested on RTX 4060) | `setup.ps1` |
+| macOS on Apple Silicon (M1/M2/M3/M4…), 16 GB+ unified memory recommended | Yes, **experimental / less tested** | `setup.sh` |
+| Intel Mac | **No**. PyTorch 2.6 has no Intel-Mac builds | — |
+| Windows without an NVIDIA GPU, or Linux | CPU only, very slow; not officially supported | — |
 
-No Hugging Face login is needed for the default path. Only the optional `--with-language` CLI flag needs gated access to `meta-llama/Llama-3.2-3B` (`huggingface-cli login`).
+Check with `uname -m` on macOS (it must print `arm64`), or `nvidia-smi` on Windows.
 
-FFmpeg does **not** need a separate install. It comes bundled with the `imageio-ffmpeg` pip package.
+Both platforms need about 25 GB of free disk and internet access on the first run (pip packages, the TRIBE source, Hugging Face weights, the HCP-MMP1 atlas). No Hugging Face login is needed for the default path. FFmpeg comes bundled through the `imageio-ffmpeg` package.
 
-## Setup steps
+---
 
-Run these from the repo root in PowerShell.
+## Windows setup (NVIDIA)
 
-1. **Check the prerequisites** listed above. If `py -3.12` is missing, install Python 3.12 from python.org (tick "Add python.exe to PATH" and keep the `py` launcher). If there's no NVIDIA GPU, stop and tell the user: the GPU path won't work, and the CPU fallback (`--video-device cpu --head-device cpu`, CLI only) is very slow.
-
-2. **Run the installer:**
+1. **Prerequisites:**
+   - **Python 3.12, 64-bit:** check with `py -3.12 --version`. If it's missing, install it from python.org and keep the `py` launcher.
+   - **Git:** check with `git --version`.
+   - **An NVIDIA driver that supports CUDA 12.4:** check with `nvidia-smi`.
+2. **Install:**
    ```powershell
    powershell -ExecutionPolicy Bypass -File .\setup.ps1
-   ```
-   If Python 3.12 isn't on the `py` launcher, run:
-   ```powershell
+   # if Python 3.12 isn't on the py launcher:
    powershell -ExecutionPolicy Bypass -File .\setup.ps1 -Python "C:\Path\To\Python312\python.exe"
    ```
-   The script:
-   - creates `.venv\` with Python 3.12
-   - clones `https://github.com/facebookresearch/tribev2` into `vendor\tribev2` and checks out commit `af58661791a351a448a489042a28f6c37e1c14b7`
+   This does the following:
+   - creates `.venv\`
+   - clones `facebookresearch/tribev2` at commit `af58661791a351a448a489042a28f6c37e1c14b7` into `vendor\tribev2`
    - installs `torch==2.6.0` and `torchvision==0.21.0` from `https://download.pytorch.org/whl/cu124`
-   - runs `pip install -e vendor\tribev2 -r requirements-local.txt` (Flask, transformers, mne, scipy, matplotlib, imageio-ffmpeg, nibabel, requests and others)
-   - runs `diagnostics.py`
+   - installs `vendor\tribev2` and `requirements-local.txt`
+   - runs the diagnostics
+3. **Check the diagnostics output:** there should be no `MISSING` lines, `PyTorch: 2.6.0+cu124`, `CUDA available: True` and `Accelerator that will be used: NVIDIA CUDA`. To rerun the check, use `.\diagnostics.bat`.
+4. **Smoke test:** run `.\analyze.bat SAMPLE\test_reel.mp4`. It passes when it prints `Done: ...\OUTPUT\test_reel`. The first run downloads several GB of model weights and can take 5–20 minutes.
+5. **Launch:** double-click `start_gui.bat`.
 
-3. **Check the diagnostics output.** The last lines must show:
-   - every package listed as `installed` (no `MISSING`)
-   - `PyTorch: 2.6.0+cu124`
-   - `CUDA available: True`, plus a GPU line with its VRAM
+## macOS setup (Apple Silicon)
 
-   You can rerun the check at any time with `.\diagnostics.bat`.
-
-4. **Smoke test** (this downloads several GB of weights the first time, so allow 5–20 minutes):
-   ```powershell
-   .\analyze.bat SAMPLE\test_reel.mp4
+1. **Prerequisites:**
+   - **Git:** check with `git --version`. If it's missing, run `xcode-select --install`.
+   - **Python 3.12:** check with `python3.12 --version`. If it's missing, run `brew install python@3.12` (or use the python.org installer).
+   - **Apple Silicon:** `uname -m` must print `arm64`.
+2. **Install**, from the repo root in Terminal:
+   ```bash
+   bash setup.sh
+   # or point it at a specific interpreter:
+   PYTHON=/opt/homebrew/bin/python3.12 bash setup.sh
    ```
-   The run passes if it prints `Done: ...\OUTPUT\test_reel` and `OUTPUT\test_reel\` contains `metrics.json`, `attention_timeline.csv`, `attention_plot.png` and `report.html`. The GUI shows this result as "Demo · test_reel.mp4".
+   This does the following:
+   - creates `.venv/`
+   - clones `facebookresearch/tribev2` at the same pinned commit into `vendor/tribev2`
+   - installs `torch==2.6.0` and `torchvision==0.21.0` from standard PyPI (the arm64 wheels include Metal/MPS)
+   - installs `vendor/tribev2` and `requirements-local.txt`
+   - makes the `.command` launchers executable and clears Gatekeeper quarantine flags
+   - runs the diagnostics
 
-5. **Launch the app:** double-click `start_gui.bat`, or run `.\.venv\Scripts\python.exe gui.py`. A browser tab opens at `http://127.0.0.1:7860`. If that port is taken, the app uses the next free one and prints it. Keep the console window open while using the app.
+   Use `bash setup.sh`, not `./setup.sh`. Web uploads and zip downloads can strip the executable bit.
+3. **Check the diagnostics output:** there should be no `MISSING` lines, `Apple MPS available: True`, `Accelerator that will be used: Apple Silicon (Metal / MPS)` and `Text-to-speech (say): available`. To rerun the check, use `./diagnostics.command`.
+4. **Smoke test:** run `./analyze.command SAMPLE/test_reel.mp4`. It passes when it prints `Devices: video encoder = mps ...` and then `Done: .../OUTPUT/test_reel`.
+5. **Launch:** double-click `start_gui.command` in Finder, or run `./start_gui.command`. If macOS blocks it the first time, right-click it and choose **Open**.
+
+**How the Apple Silicon path works.** neuralset's config only accepts `cpu`, `cuda` or `auto` as a device. So `analyze.py` passes `cpu` in the config, and `src/apple_silicon.py` moves the V-JEPA2 and Wav2Vec-BERT encoders onto `mps` at runtime:
+
+- **V-JEPA2** runs under float16 autocast. If a clip ever produces NaN or inf, that clip is recomputed in float32 and the model stays in float32.
+- **Settings:** `TRIBE_MPS_PRECISION=fp32` forces float32 throughout. `PYTORCH_ENABLE_MPS_FALLBACK=1` is set automatically, so operations Metal doesn't support run on the CPU instead.
+- **Prediction head:** it tries `mps` first and falls back to CPU if Metal fails on it.
+- **Caches:** cached features are keyed without the device, so they work across machines.
 
 ## If something fails
 
 | Symptom | Fix |
 | --- | --- |
-| `CUDA available: False` | The driver is too old, or a CPU-only torch got installed. Run `.venv\Scripts\python.exe -m pip install --force-reinstall --index-url https://download.pytorch.org/whl/cu124 torch==2.6.0 torchvision==0.21.0` |
-| `This GPU/PyTorch build does not support CUDA bf16` | The GPU/torch build lacks bf16. Use the CLI with `--video-device cpu` |
-| CUDA out of memory | Close other GPU apps (games, other AI tools) and retry. Or use `--video-device cpu` (slower) |
-| Hugging Face download errors or 401 | Check your internet connection. Models go to `cache\models`, and `HF_HOME` is set there automatically. The default models are public |
-| Atlas download fails (`HCP-MMP1`) | `reel_metrics.py` downloads two `.annot` files from figshare/S3 and checks their MD5. Retry on a stable connection |
-| Text input fails | Needs Windows PowerShell and an installed English SAPI voice (Settings → Time & language → Speech) |
-| `ModuleNotFoundError: flask` | Rerun `setup.ps1`, or `.venv\Scripts\python.exe -m pip install -r requirements-local.txt` |
+| `CUDA available: False` (Windows) | The driver is too old, or a CPU-only torch got installed. Run `.venv\Scripts\python.exe -m pip install --force-reinstall --index-url https://download.pytorch.org/whl/cu124 torch==2.6.0 torchvision==0.21.0` |
+| `Apple MPS available: False` (Mac) | You're on an Intel Mac, an x86 Python running under Rosetta, or macOS older than 12.3. `python3.12 -c "import platform;print(platform.machine())"` must print `arm64` |
+| `MPS backend out of memory` | Close memory-heavy apps and retry. 8 GB Macs will struggle. Last resort: `./analyze.command file.mp4 --video-device cpu` (slow) |
+| Mac results look wrong or contain NaNs | Rerun with `TRIBE_MPS_PRECISION=fp32 ./analyze.command file.mp4 --force` |
+| CUDA out of memory (Windows) | Close other GPU apps, or use `--video-device cpu` (slow) |
+| Hugging Face download errors | Check your internet connection. Weights go to `cache/models` (`HF_HOME` is set automatically). The default models are public |
+| Atlas download fails (`HCP-MMP1`) | Retry on a stable connection. The two `.annot` files are MD5-verified |
+| Text input fails | Windows needs PowerShell and an English SAPI voice. On macOS, check that `say "hello"` works |
+| `permission denied: ./start_gui.command` | Run `chmod +x *.command`, or just `bash setup.sh` again |
 
-`requirements-lock.txt` is a reference `pip freeze` from a working machine (Python 3.12, RTX 4060, CUDA 12.4). Use it to compare versions when debugging. Don't install from it directly: it pins the `+cu124` torch builds, which need the PyTorch index URL.
+`requirements-lock.txt` is a reference `pip freeze` from a working Windows/CUDA machine. Use it to compare versions when debugging, but don't install from it directly.
 
 ## Layout after setup
 
@@ -89,10 +114,11 @@ OUTPUT/<id>/      per-input results                (git-ignored)
 
 ## Rules for agents working in this repo
 
-- Don't commit `.venv/`, `vendor/`, `cache/`, `INPUT/` or `OUTPUT/`. `.gitignore` already excludes them.
-- Don't edit files under `vendor/tribev2`. The local changes are applied at runtime instead (`src/gpu_video.py`, and the YAML/Hub-path workarounds in `analyze.py`).
-- If you change `MODEL_REVISION` in `analyze.py` or the pinned commit in `setup.ps1`, say so clearly. Cached predictions are keyed on the model revision.
-- The outputs are **experimental neural proxies**, ranked within one input. Don't present them as real retention, attention or virality predictions in UI text or docs.
+- Don't commit `.venv/`, `vendor/`, `cache/`, `INPUT/` or `OUTPUT/`.
+- Don't edit files under `vendor/tribev2` or installed packages. Platform fixes are applied at runtime in `src/gpu_video.py`, `src/apple_silicon.py` and `analyze.py`.
+- Keep `*.sh` and `*.command` files with LF line endings (`.gitattributes` enforces this).
+- If you change `MODEL_REVISION` in `analyze.py` or the pinned commit in the setup scripts, say so clearly. Cached predictions are keyed on the model revision and the device.
+- The outputs are **experimental neural proxies**, and the projections are a toy. Don't present them as real retention, attention or virality predictions.
 
 ## Licensing
 

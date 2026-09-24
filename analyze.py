@@ -18,7 +18,10 @@ MODEL_REVISION = "f894e783020944dcd96e5568550afe2aa9743f9f"
 
 def configure_cache() -> None:
     cache = ROOT / "cache"
-    os.environ["PATH"] = str(ROOT / ".venv" / "Scripts") + os.pathsep + os.environ.get("PATH", "")
+    # The venv's own script folder (.venv\\Scripts on Windows, .venv/bin on macOS).
+    os.environ["PATH"] = str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", "")
+    # Let the few PyTorch ops that Metal lacks fall back to CPU instead of crashing.
+    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
     for name in ("models", "features", "atlas", "mne", "temp"):
         (cache / name).mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("HF_HOME", str(cache / "models"))
@@ -67,6 +70,33 @@ def make_events(model, path: Path, include_audio: bool, include_language: bool):
     return standardize_events(event)
 
 
+def resolve_device(requested: str) -> str:
+    """auto -> NVIDIA CUDA, else Apple Silicon MPS, else CPU."""
+    import torch
+    from apple_silicon import mps_available
+
+    if requested == "auto":
+        if torch.cuda.is_available():
+            return "cuda"
+        return "mps" if mps_available() else "cpu"
+    if requested == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA PyTorch cannot see an NVIDIA GPU. Run diagnostics first, or use --video-device auto.")
+    if requested == "mps" and not mps_available():
+        raise RuntimeError("PyTorch cannot see the Apple GPU (MPS). Use --video-device cpu or rerun setup.sh.")
+    return requested
+
+
+def _empty_accelerator_cache() -> None:
+    import torch
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    try:
+        if torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+    except Exception:
+        pass
+
+
 def infer(path: Path, *, video_device: str, head_device: str, include_audio: bool,
           include_language: bool) -> tuple[object, object]:
     import numpy as np
@@ -79,16 +109,18 @@ def infer(path: Path, *, video_device: str, head_device: str, include_audio: boo
     if video_device == "cuda":
         from gpu_video import enable_bf16_vjepa2
         enable_bf16_vjepa2()
-
-    if head_device == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("CUDA PyTorch cannot see the NVIDIA GPU. Run diagnostics.bat first.")
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    audio_device = "cuda" if torch.cuda.is_available() else "cpu"
+    if video_device == "mps":
+        # neuralset's config only accepts cpu/cuda; the patch moves the encoders to Metal.
+        from apple_silicon import enable_mps
+        enable_mps(video=True, audio=True)
+        print("Apple Silicon: V-JEPA2 and Wav2Vec-BERT run on the Metal GPU (MPS).")
     cfg = {
         "data.num_workers": 0,
         "data.batch_size": 1,
         "data.video_feature.image.batch_size": 1,
-        "data.video_feature.image.device": video_device,
-        "data.audio_feature.device": device,
+        "data.video_feature.image.device": "cpu" if video_device == "mps" else video_device,
+        "data.audio_feature.device": audio_device,
         "data.text_feature.device": "cpu",
         "data.study.transforms.chunkvideos.infra.folder": str(ROOT / "cache" / "features"),
     }
@@ -114,27 +146,39 @@ def infer(path: Path, *, video_device: str, head_device: str, include_audio: boo
     if "all" not in loaders:
         raise RuntimeError("The official TRIBE loader returned no clip segments.")
     gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    _empty_accelerator_cache()
     head = model._model
-    print(f"Running TRIBE prediction model on {head_device}...")
-    head.to(head_device)
     head.eval()
-    preds, times = [], []
-    with torch.inference_mode():
-        for batch in loaders["all"]:
-            batch = batch.to(head.device)
-            segments = []
-            for segment in batch.segments:
-                for t in np.arange(0, segment.duration - 1e-2, model.data.TR):
-                    segments.append(segment.copy(offset=t, duration=model.data.TR))
-            keep = np.array([len(s.ns_events) > 0 for s in segments], dtype=bool)
-            y = rearrange(head(batch).detach().cpu().numpy(), "b d t -> (b t) d")
-            if len(y) != len(keep):
-                raise RuntimeError(f"TRIBE output has {len(y)} rows for {len(keep)} TR segments")
-            preds.append(y[keep])
-            times.extend(float(s.start) for s, yes in zip(segments, keep) if yes)
-            del batch, y
+
+    def run_head(device: str):
+        print(f"Running TRIBE prediction model on {device}...")
+        head.to(device)
+        preds, times = [], []
+        with torch.inference_mode():
+            for batch in loaders["all"]:
+                batch = batch.to(head.device)
+                segments = []
+                for segment in batch.segments:
+                    for t in np.arange(0, segment.duration - 1e-2, model.data.TR):
+                        segments.append(segment.copy(offset=t, duration=model.data.TR))
+                keep = np.array([len(s.ns_events) > 0 for s in segments], dtype=bool)
+                y = rearrange(head(batch).detach().float().cpu().numpy(), "b d t -> (b t) d")
+                if len(y) != len(keep):
+                    raise RuntimeError(f"TRIBE output has {len(y)} rows for {len(keep)} TR segments")
+                preds.append(y[keep])
+                times.extend(float(s.start) for s, yes in zip(segments, keep) if yes)
+                del batch, y
+        return preds, times
+
+    try:
+        preds, times = run_head(head_device)
+    except (RuntimeError, TypeError, NotImplementedError) as exc:
+        if head_device != "mps":
+            raise
+        # The prediction head is small; if Metal lacks an op or dtype, CPU is fine.
+        print(f"MPS could not run the prediction head ({exc}); retrying on CPU.")
+        _empty_accelerator_cache()
+        preds, times = run_head("cpu")
     if not preds or not len(times):
         raise RuntimeError("TRIBE produced no predictions; check video duration and event extraction.")
     result = np.concatenate(preds, axis=0)
@@ -142,8 +186,7 @@ def infer(path: Path, *, video_device: str, head_device: str, include_audio: boo
         raise RuntimeError("TRIBE prediction/time alignment failed")
     del head, model, loaders
     gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    _empty_accelerator_cache()
     return result, np.asarray(times)
 
 
@@ -199,9 +242,9 @@ def analyze_one(path: Path, args) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Experimental local TRIBE v2 Reel analysis")
     parser.add_argument("video", nargs="?", type=Path, help="MP4 or audio path; omit to analyze all MP4s in INPUT")
-    parser.add_argument("--video-device", choices=["cpu", "cuda"], default="cuda",
-                        help="V-JEPA2 device; CUDA uses bf16 to fit 8 GB, CPU is the fallback")
-    parser.add_argument("--head-device", choices=["cpu", "cuda"], default="cuda")
+    parser.add_argument("--video-device", choices=["auto", "cpu", "cuda", "mps"], default="auto",
+                        help="V-JEPA2 device. auto = NVIDIA CUDA (bf16), else Apple Silicon MPS (fp16), else CPU")
+    parser.add_argument("--head-device", choices=["auto", "cpu", "cuda", "mps"], default="auto")
     parser.add_argument("--no-audio", action="store_true", help="Use for silent video or video-only analysis")
     parser.add_argument("--with-language", action="store_true",
                         help="Experimental full WhisperX/Llama path; requires gated Llama access")
@@ -210,10 +253,17 @@ def main() -> int:
     if args.no_audio and args.with_language:
         parser.error("--no-audio and --with-language cannot be combined")
     configure_cache()
+    try:
+        args.video_device = resolve_device(args.video_device)
+        args.head_device = resolve_device(args.head_device)
+    except RuntimeError as exc:
+        print(f"FAILED: {exc}", file=sys.stderr)
+        return 2
+    print(f"Devices: video encoder = {args.video_device}, prediction head = {args.head_device}")
     paths = [args.video] if args.video else sorted(
         p for p in (ROOT / "INPUT").glob("*.mp4") if not p.name.endswith(".tmp.mp4"))
     if not paths:
-        print(f"No MP4 found. Drop a video into {ROOT / 'INPUT'} and run analyze.bat.")
+        print(f"No MP4 found. Drop a video into {ROOT / 'INPUT'} and run the analyze script again.")
         return 1
     failures = []
     for path in paths:
@@ -222,9 +272,10 @@ def main() -> int:
         except Exception as exc:
             failures.append((str(path), str(exc)))
             print(f"FAILED: {path}: {exc}", file=sys.stderr)
-            if "out of memory" in str(exc).lower() or "cuda oom" in str(exc).lower():
-                print("Memory tip: rerun with --video-device cpu, close GPU-heavy apps, "
-                      "and leave other models unloaded.", file=sys.stderr)
+            low = str(exc).lower()
+            if "out of memory" in low or "cuda oom" in low or "mps backend out of memory" in low:
+                print("Memory tip: close GPU/memory-heavy apps and retry, or rerun with --video-device cpu. "
+                      "On a Mac, TRIBE_MPS_PRECISION=fp16 (default) uses the least memory.", file=sys.stderr)
     if failures:
         print(f"{len(failures)} video(s) failed. See errors above; cached stages remain reusable.", file=sys.stderr)
         return 2

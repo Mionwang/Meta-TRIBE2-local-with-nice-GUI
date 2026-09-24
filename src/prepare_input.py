@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import imageio_ffmpeg
@@ -51,6 +53,25 @@ def _with_ext(stem: Path, ext: str) -> Path:
     # Path.with_suffix() would treat "clip.v2-video-abc" as stem "clip" + suffix
     # ".v2-video-abc" and silently rename the output. Append instead.
     return stem.parent / f"{stem.name}{ext}"
+
+
+def _speak(text_file: Path, wav_out: Path) -> None:
+    """Text-to-speech with the operating system's built-in voice (no extra installs)."""
+    if sys.platform == "win32":
+        script = Path(__file__).with_name("speak_text.ps1")
+        _run(["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+              "-File", str(script), str(text_file), str(wav_out)])
+    elif sys.platform == "darwin":
+        # macOS `say`: 22.05 kHz 16-bit mono PCM WAV, matching the Windows path.
+        _run(["say", "-f", str(text_file), "-o", str(wav_out),
+              "--file-format=WAVE", "--data-format=LEI16@22050"])
+    else:
+        espeak = shutil.which("espeak-ng") or shutil.which("espeak")
+        if not espeak:
+            raise RuntimeError("Text input needs a system voice: install espeak-ng, or use audio/video instead.")
+        _run([espeak, "-f", str(text_file), "-w", str(wav_out)])
+    if not wav_out.is_file() or wav_out.stat().st_size < 1000:
+        raise RuntimeError("The system voice produced no audio. Check that an English voice is installed.")
 
 
 def prepare_input(source: Path, kind: str, destination_stem: Path) -> tuple[Path, list[str], str]:
@@ -111,12 +132,10 @@ def prepare_input(source: Path, kind: str, destination_stem: Path) -> tuple[Path
         target = _with_ext(destination_stem, ".wav")
         if not target.exists():
             temporary = target.with_name(target.stem + ".tmp.wav")
-            script = Path(__file__).with_name("speak_text.ps1")
-            _run(["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-                  "-File", str(script), str(source), str(temporary)])
+            _speak(source, temporary)
             os.replace(temporary, target)
         return target, [], (
-            "Text was read aloud with this PC's English voice, then analyzed as audio. "
+            "Text was read aloud with this computer's English voice, then analyzed as audio. "
             "This does not use TRIBE v2's gated language encoder."
         )
     raise ValueError("Unsupported input type.")
